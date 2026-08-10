@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tech Talk Details</title>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+<style>
+body{font-family:Arial,sans-serif;background:#f4f6f8;margin:0;color:#222}
+.container{max-width:1250px;margin:30px auto;padding:0 20px}
+.card{background:#fff;border-radius:12px;padding:24px;margin-bottom:20px;box-shadow:0 2px 10px #0001}
+h1,h2{margin-top:0}.menu button{padding:11px 18px;margin:5px;border:0;border-radius:7px;cursor:pointer;background:#2563eb;color:#fff}
+.menu button:hover{background:#1d4ed8}.status{margin-top:14px;padding:10px;border-radius:6px;background:#eef2ff}
+.good{background:#ecfdf5;color:#166534}.bad{background:#fff1f2;color:#991b1b}
+.hidden{display:none}.note{font-size:14px;color:#555}
+.search{width:100%;box-sizing:border-box;padding:11px;margin:14px 0;border:1px solid #bbb;border-radius:6px}
+.table-wrap{overflow:auto;max-height:650px;border:1px solid #ddd}
+table{width:100%;border-collapse:collapse}th,td{padding:10px;border-bottom:1px solid #ddd;text-align:left}
+th{position:sticky;top:0;background:#e5e7eb}
+</style>
+</head>
+<body>
+<div class="container">
+<div class="card">
+<h1>Tech Talk Details</h1>
+<p>Select an event category.</p>
+<div class="menu">
+<button onclick="selectOption(1)">1. NPTEL</button>
+<button onclick="selectOption(2)">2. TECH TALK</button>
+<button onclick="selectOption(3)">3. FDP</button>
+<button onclick="selectOption(4)">4. External Events</button>
+<button onclick="quitApp()">q. Quit</button>
+</div>
+<div id="menuStatus" class="status">Ready.</div>
+</div>
+
+<div id="techTalk" class="card hidden">
+<h2>TECH TALK</h2>
+<p>Reading the two Excel workbooks directly from GitHub.</p>
+<p class="note">All worksheets in both workbooks are traversed. No year-to-year comparison is performed.</p>
+<div id="loadStatus" class="status">Waiting to load...</div>
+</div>
+
+<div id="results" class="card hidden">
+<h2>Tech Talk Details</h2>
+<p><b id="count">0</b> entries extracted.</p>
+<input id="search" class="search" placeholder="Search faculty member, title, date, source or worksheet...">
+<div class="table-wrap">
+<table>
+<thead><tr><th>Faculty Member</th><th>Title</th><th>Schedule Date</th><th>Source</th><th>Worksheet</th></tr></thead>
+<tbody id="tbody"></tbody>
+</table>
+</div>
+</div>
+</div>
+
+<script>
+const SOURCES = [
+  {
+    label: "Previous Years",
+    url: "https://raw.githubusercontent.com/raghurammudumbi-collab/AKUS/refs/heads/main/S-TechTalks%20Schedule-2025-2026.xlsx"
+  },
+  {
+    label: "Current Years",
+    url: "https://raw.githubusercontent.com/raghurammudumbi-collab/AKUS/refs/heads/main/N-Knowledge%20Upgrade%202025-26%20-TechTalk_.xlsx"
+  }
+];
+
+let records=[];
+
+function selectOption(n){
+  const status=document.getElementById("menuStatus");
+  if(n===2){
+    document.getElementById("techTalk").classList.remove("hidden");
+    document.getElementById("results").classList.add("hidden");
+    status.textContent="TECH TALK selected. Loading the two GitHub Excel files...";
+    loadTechTalk();
+  }else{
+    document.getElementById("techTalk").classList.add("hidden");
+    document.getElementById("results").classList.add("hidden");
+    status.textContent="This version currently implements Option 2 — TECH TALK.";
+  }
+}
+
+function quitApp(){
+  document.getElementById("techTalk").classList.add("hidden");
+  document.getElementById("results").classList.add("hidden");
+  document.getElementById("menuStatus").textContent="Program ended. You may close this tab.";
+}
+
+async function loadTechTalk(){
+  const status=document.getElementById("loadStatus");
+  records=[];
+  try{
+    for(const source of SOURCES){
+      status.textContent="Downloading "+source.label+" Excel file...";
+      const wb=await fetchWorkbook(source.url);
+      status.textContent="Traversing all worksheets in "+source.label+"...";
+      extractWorkbook(wb,source.label);
+    }
+    render(records);
+    document.getElementById("results").classList.remove("hidden");
+    status.className="status good";
+    status.textContent="Completed. "+records.length+" entries extracted. No comparison performed.";
+  }catch(err){
+    status.className="status bad";
+    status.innerHTML="<b>Unable to load the Excel file.</b><br>"+escapeHtml(err.message)+
+      "<br><br>The application uses the direct GitHub RAW Excel files, not the Office viewer URL.";
+  }
+}
+
+async function fetchWorkbook(url){
+  const response=await fetch(url,{mode:"cors",cache:"no-store"});
+  if(!response.ok) throw new Error("HTTP "+response.status+" while downloading "+url);
+  const buffer=await response.arrayBuffer();
+  return XLSX.read(buffer,{type:"array",cellDates:true});
+}
+
+function norm(v){
+  return String(v??"").trim().toLowerCase().replace(/\s+/g," ");
+}
+
+function dateText(v){
+  if(v instanceof Date&&!isNaN(v))
+    return v.toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"});
+  return String(v??"").trim();
+}
+
+function findHeader(rows){
+  for(let r=0;r<rows.length;r++){
+    const h=rows[r].map(norm);
+    const faculty=h.findIndex(x=>[
+      "faculty member","faculty","faculty name","name",
+      "resource person","speaker","speaker name"
+    ].includes(x));
+    const title=h.findIndex(x=>[
+      "title","topic","tech talk title","talk title",
+      "session title","topic/title"
+    ].includes(x));
+    const date=h.findIndex(x=>[
+      "scheduled date","schedule date","date",
+      "event date","scheduled on"
+    ].includes(x));
+    if(faculty>=0&&title>=0&&date>=0)
+      return {r,faculty,title,date};
+  }
+  return null;
+}
+
+function extractWorkbook(wb,source){
+  wb.SheetNames.forEach(sheetName=>{
+    const rows=XLSX.utils.sheet_to_json(
+      wb.Sheets[sheetName],{header:1,defval:"",raw:true}
+    );
+    const h=findHeader(rows);
+    if(!h)return;
+
+    for(let r=h.r+1;r<rows.length;r++){
+      const row=rows[r];
+      const faculty=row[h.faculty];
+      const title=row[h.title];
+      const date=row[h.date];
+
+      if(String(faculty).trim() &&
+         String(title).trim() &&
+         String(date).trim()){
+        records.push({
+          faculty:String(faculty).trim(),
+          title:String(title).trim(),
+          date:dateText(date),
+          source,
+          worksheet:sheetName
+        });
+      }
+    }
+  });
+}
+
+function render(data){
+  document.getElementById("count").textContent=data.length;
+  drawRows(data);
+
+  document.getElementById("search").oninput=function(){
+    const q=norm(this.value);
+    drawRows(data.filter(x=>norm(Object.values(x).join(" ")).includes(q)));
+  };
+}
+
+function drawRows(data){
+  const body=document.getElementById("tbody");
+  body.innerHTML="";
+  data.forEach(x=>{
+    const tr=document.createElement("tr");
+    [x.faculty,x.title,x.date,x.source,x.worksheet].forEach(v=>{
+      const td=document.createElement("td");
+      td.textContent=v;
+      tr.appendChild(td);
+    });
+    body.appendChild(tr);
+  });
+}
+
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g,c=>({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+  }[c]));
+}
+</script>
+</body>
+</html>
