@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TECH TALK AVAILABILITY</title>
+
+<!-- SheetJS: reads Excel workbooks in the browser -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+<style>
+    body {
+        font-family: Arial, sans-serif;
+        background: #f4f7fb;
+        margin: 0;
+        padding: 30px;
+        color: #222;
+    }
+
+    .container {
+        max-width: 950px;
+        margin: auto;
+        background: white;
+        padding: 30px;
+        border-radius: 12px;
+        box-shadow: 0 5px 20px rgba(0,0,0,.10);
+    }
+
+    h1 {
+        text-align: center;
+        margin-top: 0;
+    }
+
+    .instruction {
+        text-align: center;
+        color: #555;
+        margin-bottom: 25px;
+    }
+
+    .input-row {
+        display: flex;
+        gap: 10px;
+    }
+
+    input {
+        flex: 1;
+        padding: 14px;
+        font-size: 16px;
+        border: 1px solid #bbb;
+        border-radius: 7px;
+    }
+
+    button {
+        padding: 14px 22px;
+        font-size: 16px;
+        border: 0;
+        border-radius: 7px;
+        cursor: pointer;
+        background: #2563eb;
+        color: white;
+        font-weight: bold;
+    }
+
+    button:hover {
+        background: #1d4ed8;
+    }
+
+    #status {
+        margin-top: 25px;
+        font-size: 18px;
+        font-weight: bold;
+    }
+
+    .checking { color: #2563eb; }
+    .found { color: #15803d; }
+    .not-found { color: #b91c1c; }
+    .error { color: #b91c1c; }
+
+    table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 20px;
+    }
+
+    th, td {
+        border: 1px solid #ddd;
+        padding: 11px;
+        text-align: left;
+        vertical-align: top;
+    }
+
+    th {
+        background: #eaf1ff;
+    }
+
+    tr:nth-child(even) {
+        background: #f8fafc;
+    }
+
+    .history {
+        margin-top: 30px;
+        color: #555;
+        font-size: 14px;
+    }
+
+    .footer {
+        margin-top: 25px;
+        text-align: center;
+        color: #888;
+        font-size: 13px;
+    }
+
+    @media (max-width: 650px) {
+        body { padding: 12px; }
+        .container { padding: 20px; }
+        .input-row { flex-direction: column; }
+        button { width: 100%; }
+    }
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+    <h1>TECH TALK AVAILABILITY</h1>
+
+    <div class="instruction">
+        Please enter a your topic, or type <strong>quit</strong> to quit.
+    </div>
+
+    <div class="input-row">
+        <input
+            id="topicInput"
+            type="text"
+            placeholder="Enter Tech Talk topic..."
+            autocomplete="off"
+        >
+        <button onclick="checkTopic()">Check</button>
+    </div>
+
+    <div id="status"></div>
+
+    <div id="results"></div>
+
+    <div class="history" id="history"></div>
+
+    <div class="footer">
+        Tech Talk Availability
+    </div>
+
+</div>
+
+<script>
+
+/*
+    IMPORTANT:
+    These are the RAW GitHub URLs.
+    The browser must download the actual XLSX files, not GitHub's
+    /blob/main/ HTML page.
+*/
+const EXCEL_FILES = [
+    {
+        name: "S-TechTalks Schedule-2025-2026.xlsx",
+        url: "https://raw.githubusercontent.com/raghurammudumbi-collab/AKUS/main/S-TechTalks%20Schedule-2025-2026.xlsx"
+    },
+    {
+        name: "N-Knowledge Upgrade 2025-26 -TechTalk_.xlsx",
+        url: "https://raw.githubusercontent.com/raghurammudumbi-collab/AKUS/main/N-Knowledge%20Upgrade%202025-26%20-TechTalk_.xlsx"
+    }
+];
+
+let allRecords = null;
+
+
+/* -----------------------------
+   Text normalization
+----------------------------- */
+
+function normalize(text) {
+    return String(text || "")
+        .toLowerCase()
+        .replace(/&/g, " and ")
+        .replace(/[^a-z0-9\s]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+
+/* -----------------------------
+   Get significant words
+----------------------------- */
+
+const STOP_WORDS = new Set([
+    "a", "an", "and", "are", "as", "at", "be", "by",
+    "for", "from", "in", "into", "is", "of", "on",
+    "or", "the", "to", "with", "using", "use",
+    "application", "applications", "technology",
+    "technologies", "topic", "topics", "about",
+    "based", "system", "systems", "for"
+]);
+
+function significantWords(text) {
+    return normalize(text)
+        .split(" ")
+        .filter(word => word.length >= 3 && !STOP_WORDS.has(word));
+}
+
+
+/* -----------------------------
+   Similar topic matching
+----------------------------- */
+
+function similarity(query, title) {
+
+    const qWords = significantWords(query);
+    const titleWords = significantWords(title);
+
+    if (qWords.length === 0 || titleWords.length === 0) {
+        return 0;
+    }
+
+    let matched = 0;
+
+    for (const q of qWords) {
+
+        for (const t of titleWords) {
+
+            // Exact word
+            if (q === t) {
+                matched++;
+                break;
+            }
+
+            // Singular/plural or related prefix
+            if (
+                q.length >= 5 &&
+                t.length >= 5 &&
+                (q.startsWith(t) || t.startsWith(q))
+            ) {
+                matched++;
+                break;
+            }
+
+            // Small spelling error tolerance
+            if (
+                q.length >= 5 &&
+                t.length >= 5 &&
+                levenshtein(q, t) <= 1
+            ) {
+                matched++;
+                break;
+            }
+        }
+    }
+
+    return matched / qWords.length;
+}
+
+
+function levenshtein(a, b) {
+
+    const matrix = [];
+
+    for (let i = 0; i <= b.length; i++) {
+        matrix[i] = [i];
+    }
+
+    for (let j = 0; j <= a.length; j++) {
+        matrix[0][j] = j;
+    }
+
+    for (let i = 1; i <= b.length; i++) {
+
+        for (let j = 1; j <= a.length; j++) {
+
+            if (b.charAt(i - 1) === a.charAt(j - 1)) {
+                matrix[i][j] = matrix[i - 1][j - 1];
+            } else {
+                matrix[i][j] = Math.min(
+                    matrix[i - 1][j - 1] + 1,
+                    matrix[i][j - 1] + 1,
+                    matrix[i - 1][j] + 1
+                );
+            }
+        }
+    }
+
+    return matrix[b.length][a.length];
+}
+
+
+/* -----------------------------
+   Find Excel columns
+----------------------------- */
+
+function findColumn(row, possibleNames) {
+
+    const keys = Object.keys(row);
+
+    for (const key of keys) {
+
+        const normalizedKey = normalize(key);
+
+        for (const name of possibleNames) {
+
+            if (normalizedKey.includes(name)) {
+                return key;
+            }
+        }
+    }
+
+    return null;
+}
+
+
+/* -----------------------------
+   Read one Excel workbook
+   including ALL worksheets
+----------------------------- */
+
+async function readExcelFile(file) {
+
+    const response = await fetch(file.url, {
+        cache: "no-store"
+    });
+
+    if (!response.ok) {
+        throw new Error(
+            file.name + " could not be downloaded. HTTP " +
+            response.status
+        );
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+
+    const workbook = XLSX.read(arrayBuffer, {
+        type: "array",
+        cellDates: true
+    });
+
+    const records = [];
+
+    workbook.SheetNames.forEach(sheetName => {
+
+        const worksheet = workbook.Sheets[sheetName];
+
+        const rows = XLSX.utils.sheet_to_json(
+            worksheet,
+            { defval: "" }
+        );
+
+        rows.forEach(row => {
+
+            const keys = Object.keys(row);
+
+            if (keys.length === 0) {
+                return;
+            }
+
+            const facultyColumn = findColumn(
+                row,
+                ["faculty member", "faculty", "name"]
+            );
+
+            const titleColumn = findColumn(
+                row,
+                ["title", "topic", "tech talk"]
+            );
+
+            const dateColumn = findColumn(
+                row,
+                ["schedule date", "date"]
+            );
+
+            const values = Object.values(row);
+
+            const faculty = facultyColumn
+                ? row[facultyColumn]
+                : values[1] || "";
+
+            const title = titleColumn
+                ? row[titleColumn]
+                : values[2] || "";
+
+            const date = dateColumn
+                ? row[dateColumn]
+                : values[3] || "";
+
+            /*
+                Only rows containing a title are searchable.
+            */
+            if (!String(title).trim()) {
+                return;
+            }
+
+            records.push({
+                workbook: file.name,
+                sheet: sheetName,
+                faculty: String(faculty || "").trim(),
+                title: String(title || "").trim(),
+                date: formatDate(date)
+            });
+
+        });
+
+    });
+
+    return records;
+}
+
+
+/* -----------------------------
+   Format dates
+----------------------------- */
+
+function formatDate(value) {
+
+    if (value instanceof Date && !isNaN(value)) {
+
+        return value.toLocaleDateString("en-GB");
+    }
+
+    return String(value || "").trim();
+}
+
+
+/* -----------------------------
+   Load both workbooks
+----------------------------- */
+
+async function loadAllRecords() {
+
+    if (allRecords !== null) {
+        return allRecords;
+    }
+
+    allRecords = [];
+
+    for (const file of EXCEL_FILES) {
+
+        const records = await readExcelFile(file);
+
+        allRecords.push(...records);
+    }
+
+    return allRecords;
+}
+
+
+/* -----------------------------
+   Exact / similar search
+----------------------------- */
+
+function searchRecords(topic, records) {
+
+    const normalizedTopic = normalize(topic);
+
+    const matches = [];
+
+    records.forEach(record => {
+
+        const normalizedTitle = normalize(record.title);
+
+        /*
+            LEVEL 1:
+            Exact title match.
+        */
+        if (
+            normalizedTitle === normalizedTopic ||
+            normalizedTitle.includes(normalizedTopic) ||
+            normalizedTopic.includes(normalizedTitle)
+        ) {
+
+            matches.push({
+                record: record,
+                score: 1.0
+            });
+
+            return;
+        }
+
+        /*
+            LEVEL 2:
+            Similar topic.
+            Threshold = 50% of significant words matched.
+        */
+        const score = similarity(
+            topic,
+            record.title
+        );
+
+        if (score >= 0.50) {
+
+            matches.push({
+                record: record,
+                score: score
+            });
+        }
+
+    });
+
+    /*
+        Highest similarity first.
+    */
+    matches.sort((a, b) => b.score - a.score);
+
+    return matches.map(item => item.record);
+}
+
+
+/* -----------------------------
+   Remove duplicate results
+----------------------------- */
+
+function removeDuplicates(records) {
+
+    const seen = new Set();
+    const output = [];
+
+    records.forEach(record => {
+
+        const key =
+            normalize(record.faculty) + "|" +
+            normalize(record.title) + "|" +
+            normalize(record.date);
+
+        if (!seen.has(key)) {
+
+            seen.add(key);
+            output.push(record);
+        }
+    });
+
+    return output;
+}
+
+
+/* -----------------------------
+   Display results
+----------------------------- */
+
+function displayResults(records) {
+
+    const resultsDiv =
+        document.getElementById("results");
+
+    records = removeDuplicates(records);
+
+    let html = `
+        <h3>Matching Tech Talk(s)</h3>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Faculty Member</th>
+                    <th>Title</th>
+                    <th>Schedule Date</th>
+                </tr>
+            </thead>
+            <tbody>
+    `;
+
+    records.forEach(record => {
+
+        html += `
+            <tr>
+                <td>${escapeHtml(record.faculty)}</td>
+                <td>${escapeHtml(record.title)}</td>
+                <td>${escapeHtml(record.date)}</td>
+            </tr>
+        `;
+    });
+
+    html += `
+            </tbody>
+        </table>
+    `;
+
+    resultsDiv.innerHTML = html;
+}
+
+
+/* -----------------------------
+   Main check function
+----------------------------- */
+
+async function checkTopic() {
+
+    const input =
+        document.getElementById("topicInput");
+
+    const status =
+        document.getElementById("status");
+
+    const results =
+        document.getElementById("results");
+
+    const topic = input.value.trim();
+
+    /*
+        Empty input
+    */
+    if (!topic) {
+
+        status.className = "not-found";
+        status.textContent =
+            "Please enter a topic.";
+
+        results.innerHTML = "";
+
+        input.focus();
+
+        return;
+    }
+
+
+    /*
+        QUIT
+        Application continues to run until
+        user explicitly enters quit.
+    */
+    if (topic.toLowerCase() === "quit") {
+
+        status.className = "";
+        status.textContent =
+            "Application stopped. You can refresh the page to start again.";
+
+        results.innerHTML = "";
+
+        input.disabled = true;
+
+        return;
+    }
+
+
+    /*
+        Required message
+    */
+    status.className = "checking";
+    status.textContent = "I am checking";
+
+    results.innerHTML = "";
+
+
+    try {
+
+        /*
+            Download/read both Excel workbooks.
+            This includes every worksheet in each workbook.
+        */
+        const records =
+            await loadAllRecords();
+
+
+        /*
+            Search exact and similar topics.
+        */
+        const matches =
+            searchRecords(topic, records);
+
+
+        if (matches.length > 0) {
+
+            status.className = "found";
+
+            status.textContent =
+                "Topic or similar topic exists:";
+
+            displayResults(matches);
+
+        } else {
+
+            status.className = "not-found";
+
+            status.textContent =
+                "This topic has not be taken";
+
+            results.innerHTML = "";
+        }
+
+
+        /*
+            Clear input so the user can enter
+            another topic.
+            This creates the requested LOOP.
+        */
+        input.value = "";
+        input.focus();
+
+    }
+
+    catch (error) {
+
+        console.error(error);
+
+        status.className = "error";
+
+        status.textContent =
+            "Unable to check the Excel files.";
+
+        results.innerHTML = `
+            <p class="error">
+                ${escapeHtml(error.message)}
+            </p>
+        `;
+
+        input.focus();
+    }
+}
+
+
+/* -----------------------------
+   HTML escaping
+----------------------------- */
+
+function escapeHtml(text) {
+
+    return String(text)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+}
+
+
+/* -----------------------------
+   ENTER key support
+----------------------------- */
+
+document
+    .getElementById("topicInput")
+    .addEventListener("keydown", function(event) {
+
+        if (event.key === "Enter") {
+
+            checkTopic();
+        }
+    });
+
+</script>
+
+</body>
+</html>
